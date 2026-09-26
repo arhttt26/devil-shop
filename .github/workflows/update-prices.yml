@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: update-prices
+  cancel-in-progress: true
+
 jobs:
   update-prices:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
 
     steps:
       - name: Checkout
@@ -20,83 +25,83 @@ jobs:
         run: |
           python3 - <<'PY'
           import urllib.request
+          from html.parser import HTMLParser
           import re
           import json
 
-          url = "https://www.tgju.org/profile/price_dollar_rl"
+          URL = "https://www.tgju.org/profile/price_dollar_rl"
+
+          class PriceParser(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.in_target = False
+                  self.depth = 0
+                  self.parts = []
+                  self.value_attr = None
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+
+                  if not self.in_target and attrs.get("data-field") == "price_dollar_rl":
+                      self.in_target = True
+                      self.depth = 1
+                      self.value_attr = attrs.get("data-value")
+                      return
+
+                  if self.in_target:
+                      self.depth += 1
+
+              def handle_endtag(self, tag):
+                  if self.in_target:
+                      self.depth -= 1
+
+                      if self.depth <= 0:
+                          self.in_target = False
+
+              def handle_data(self, data):
+                  if self.in_target:
+                      self.parts.append(data)
 
           req = urllib.request.Request(
-              url,
+              URL,
               headers={
                   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
-                  "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8"
+                  "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+                  "Accept": "text/html,application/xhtml+xml"
               }
           )
 
           with urllib.request.urlopen(req, timeout=30) as response:
               html = response.read().decode("utf-8", errors="ignore")
 
-          value = None
+          parser = PriceParser()
+          parser.feed(html)
 
-          # روش اصلی:
-          # پیدا کردن المان مربوط به price_dollar_rl
-          patterns = [
-              r'data-field=["\']price_dollar_rl["\'][^>]*>.*?<[^>]*>([\d,]+)<',
-              r'data-field=["\']price_dollar_rl["\'][^>]*data-value=["\'](\d+)',
-              r'data-field=["\']price_dollar_rl["\'][^>]*>[^0-9]*([\d,]{6,})',
-          ]
+          raw = parser.value_attr or "".join(parser.parts)
+          digits = re.sub(r"[^0-9]", "", raw)
 
-          for pattern in patterns:
-              match = re.search(pattern, html, re.S | re.I)
-
-              if match:
-                  raw = match.group(1).replace(",", "").strip()
-
-                  if raw.isdigit():
-                      candidate = int(raw)
-
-                      # دلار TGJU در حال حاضر در محدوده صدها هزار تا چند میلیون ریال است.
-                      # این شرط از گرفتن اعداد نامرتبط صفحه جلوگیری می‌کند.
-                      if 100000 <= candidate <= 10000000:
-                          value = candidate
-                          break
-
-          # روش پشتیبان:
-          # اگر ساختار HTML تغییر کرده باشد، عبارت price_dollar_rl
-          # و نزدیک‌ترین عدد معتبر را پیدا می‌کنیم.
-          if value is None:
-              matches = re.finditer(
-                  r'price_dollar_rl.{0,3000}?([\d,]{6,})',
-                  html,
-                  re.S | re.I
+          if not digits:
+              raise RuntimeError(
+                  "Could not find data-field=price_dollar_rl in TGJU page"
               )
 
-              for match in matches:
-                  raw = match.group(1).replace(",", "").strip()
+          value = int(digits)
 
-                  if raw.isdigit():
-                      candidate = int(raw)
-
-                      if 100000 <= candidate <= 10000000:
-                          value = candidate
-                          break
-
-          if value is None:
-              raise Exception(
-                  "Could not find a valid price for price_dollar_rl on TGJU"
+          # TGJU price_dollar_rl is in Rial.
+          # Prevent unrelated numbers from being saved.
+          if not 1000000 <= value <= 10000000:
+              raise RuntimeError(
+                  f"Invalid TGJU USD Rial value: {value}"
               )
 
-          # TGJU قیمت دلار را به ریال اعلام می‌کند.
-          # تبدیل ریال به تومان:
           usd_toman = round(value / 10)
 
           print("TGJU USD Rial:", value)
           print("USD Toman:", usd_toman)
 
-          # بررسی منطقی برای جلوگیری از ثبت مقدار خراب
-          if usd_toman < 10000 or usd_toman > 1000000:
-              raise Exception(
-                  f"Invalid USD Toman value detected: {usd_toman}"
+          if not 100000 <= usd_toman <= 1000000:
+              raise RuntimeError(
+                  f"Invalid USD Toman value: {usd_toman}"
               )
 
           with open("data/prices.json", "r", encoding="utf-8") as f:
