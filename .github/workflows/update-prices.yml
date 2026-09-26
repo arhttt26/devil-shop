@@ -15,11 +15,13 @@ concurrency:
 jobs:
   update-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Get USD price from TGJU
         run: |
@@ -27,7 +29,6 @@ jobs:
           import urllib.request
           from html.parser import HTMLParser
           import re
-          import json
 
           URL = "https://www.tgju.org/profile/price_dollar_rl"
 
@@ -73,10 +74,7 @@ jobs:
                       "AppleWebKit/537.36 "
                       "Chrome/140 Safari/537.36"
                   ),
-                  "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-                  "Accept": (
-                      "text/html,application/xhtml+xml"
-                  )
+                  "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8"
               }
           )
 
@@ -98,26 +96,48 @@ jobs:
 
           if not digits:
               raise RuntimeError(
-                  "Could not find data-field=price_dollar_rl "
-                  "in TGJU page"
+                  "Could not find USD price on TGJU."
               )
 
-          value = int(digits)
+          usd_rial = int(digits)
 
-          if not 1000000 <= value <= 10000000:
+          if not 1_000_000 <= usd_rial <= 10_000_000:
               raise RuntimeError(
-                  f"Invalid TGJU USD Rial value: {value}"
+                  f"Invalid TGJU USD Rial value: {usd_rial}"
               )
 
-          usd_toman = round(value / 10)
+          usd_toman = round(usd_rial / 10)
 
-          print("TGJU USD Rial:", value)
-          print("USD Toman:", usd_toman)
-
-          if not 100000 <= usd_toman <= 1000000:
+          if not 100_000 <= usd_toman <= 1_000_000:
               raise RuntimeError(
                   f"Invalid USD Toman value: {usd_toman}"
               )
+
+          print("USD Rial:", usd_rial)
+          print("USD Toman:", usd_toman)
+
+          with open(
+              "/tmp/usd_toman",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write(str(usd_toman))
+          PY
+
+      - name: Update prices.json
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
+          USD_TOMAN=$(cat /tmp/usd_toman)
+
+          echo "Using USD Toman: $USD_TOMAN"
+
+          python3 - "$USD_TOMAN" <<'PY'
+          import json
+          import sys
+
+          usd_toman = int(sys.argv[1])
 
           with open(
               "data/prices.json",
@@ -142,7 +162,9 @@ jobs:
               f.write("\n")
           PY
 
-      - name: Commit updated price
+          cat data/prices.json
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -151,11 +173,65 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "Price has not changed."
-          else
-            git commit -m "Update USD price"
+            exit 0
+          fi
+
+          git commit -m "Update USD price"
+
+          for attempt in 1 2 3
+          do
+            echo "Push attempt $attempt..."
+
+            if git push origin HEAD:main; then
+              echo "Push successful."
+              exit 0
+            fi
+
+            echo "Push failed. Getting latest main..."
 
             git fetch origin main
-            git rebase origin/main
+            git reset --hard origin/main
 
-            git push origin HEAD:main
-          fi
+            USD_TOMAN=$(cat /tmp/usd_toman)
+
+            python3 - "$USD_TOMAN" <<'PY'
+          import json
+          import sys
+
+          usd_toman = int(sys.argv[1])
+
+          with open(
+              "data/prices.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+              prices = json.load(f)
+
+          prices["usdToman"] = usd_toman
+
+          with open(
+              "data/prices.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  prices,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+              f.write("\n")
+          PY
+
+            git add data/prices.json
+
+            if git diff --cached --quiet; then
+              echo "Price already exists in remote."
+              exit 0
+            fi
+
+            git commit -m "Update USD price"
+          done
+
+          echo "Could not push after 3 attempts."
+          exit 1
