@@ -1,0 +1,21 @@
+{
+  "usdToman": 0,
+  "starUsd": 0,
+  "premium": [
+    {
+      "key": "prem3m",
+      "name": "پریمیوم 3 ماهه",
+      "usd": 0
+    },
+    {
+      "key": "prem6m",
+      "name": "پریمیوم 6 ماهه",
+      "usd": 0
+    },
+    {
+      "key": "prem1y",
+      "name": "پریمیوم 1 ساله",
+      "usd": 0
+    }
+  ]
+}
