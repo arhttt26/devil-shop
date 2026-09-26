@@ -42,7 +42,10 @@ jobs:
               def handle_starttag(self, tag, attrs):
                   attrs = dict(attrs)
 
-                  if not self.in_target and attrs.get("data-field") == "price_dollar_rl":
+                  if (
+                      not self.in_target
+                      and attrs.get("data-field") == "price_dollar_rl"
+                  ):
                       self.in_target = True
                       self.depth = 1
                       self.value_attr = attrs.get("data-value")
@@ -65,30 +68,42 @@ jobs:
           req = urllib.request.Request(
               URL,
               headers={
-                  "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
+                  "User-Agent": (
+                      "Mozilla/5.0 (X11; Linux x86_64) "
+                      "AppleWebKit/537.36 "
+                      "Chrome/140 Safari/537.36"
+                  ),
                   "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-                  "Accept": "text/html,application/xhtml+xml"
+                  "Accept": (
+                      "text/html,application/xhtml+xml"
+                  )
               }
           )
 
           with urllib.request.urlopen(req, timeout=30) as response:
-              html = response.read().decode("utf-8", errors="ignore")
+              html = response.read().decode(
+                  "utf-8",
+                  errors="ignore"
+              )
 
           parser = PriceParser()
           parser.feed(html)
 
-          raw = parser.value_attr or "".join(parser.parts)
+          raw = (
+              parser.value_attr
+              or "".join(parser.parts)
+          )
+
           digits = re.sub(r"[^0-9]", "", raw)
 
           if not digits:
               raise RuntimeError(
-                  "Could not find data-field=price_dollar_rl in TGJU page"
+                  "Could not find data-field=price_dollar_rl "
+                  "in TGJU page"
               )
 
           value = int(digits)
 
-          # TGJU price_dollar_rl is in Rial.
-          # Prevent unrelated numbers from being saved.
           if not 1000000 <= value <= 10000000:
               raise RuntimeError(
                   f"Invalid TGJU USD Rial value: {value}"
@@ -104,12 +119,20 @@ jobs:
                   f"Invalid USD Toman value: {usd_toman}"
               )
 
-          with open("data/prices.json", "r", encoding="utf-8") as f:
+          with open(
+              "data/prices.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
               prices = json.load(f)
 
           prices["usdToman"] = usd_toman
 
-          with open("data/prices.json", "w", encoding="utf-8") as f:
+          with open(
+              "data/prices.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
               json.dump(
                   prices,
                   f,
@@ -130,5 +153,9 @@ jobs:
             echo "Price has not changed."
           else
             git commit -m "Update USD price"
-            git push
+
+            git fetch origin main
+            git rebase origin/main
+
+            git push origin HEAD:main
           fi
