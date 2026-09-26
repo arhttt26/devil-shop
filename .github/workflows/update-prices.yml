@@ -8,21 +8,12 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: update-prices
-  cancel-in-progress: true
-
 jobs:
   update-prices:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Get USD price from TGJU
         run: |
           python3 - <<'PY'
@@ -116,122 +107,111 @@ jobs:
           print("USD Rial:", usd_rial)
           print("USD Toman:", usd_toman)
 
-          with open(
-              "/tmp/usd_toman",
-              "w",
-              encoding="utf-8"
-          ) as f:
+          with open("/tmp/usd_toman", "w") as f:
               f.write(str(usd_toman))
           PY
 
-      - name: Update prices.json
+      - name: Update prices.json through GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin main
-          git reset --hard origin/main
-
-          USD_TOMAN=$(cat /tmp/usd_toman)
-
-          echo "Using USD Toman: $USD_TOMAN"
-
-          python3 - "$USD_TOMAN" <<'PY'
+          python3 - <<'PY'
           import json
-          import sys
+          import base64
+          import urllib.request
+          import urllib.error
 
-          usd_toman = int(sys.argv[1])
+          owner = "arhttt26"
+          repo = "devil-shop"
+          path = "data/prices.json"
 
-          with open(
-              "data/prices.json",
-              "r",
-              encoding="utf-8"
-          ) as f:
-              prices = json.load(f)
+          with open("/tmp/usd_toman", "r") as f:
+              usd_toman = int(f.read().strip())
+
+          api_url = (
+              f"https://api.github.com/repos/"
+              f"{owner}/{repo}/contents/{path}"
+          )
+
+          headers = {
+              "Authorization": f"Bearer {__import__('os').environ['GH_TOKEN']}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "github-actions"
+          }
+
+          # دریافت آخرین نسخه فایل از GitHub
+          req = urllib.request.Request(
+              api_url,
+              headers=headers
+          )
+
+          with urllib.request.urlopen(req) as response:
+              remote = json.load(response)
+
+          sha = remote["sha"]
+
+          old_content = base64.b64decode(
+              remote["content"]
+          ).decode("utf-8")
+
+          prices = json.loads(old_content)
+
+          old_price = prices.get("usdToman")
 
           prices["usdToman"] = usd_toman
 
-          with open(
-              "data/prices.json",
-              "w",
-              encoding="utf-8"
-          ) as f:
-              json.dump(
-                  prices,
-                  f,
-                  ensure_ascii=False,
-                  indent=2
+          new_content = json.dumps(
+              prices,
+              ensure_ascii=False,
+              indent=2
+          ) + "\n"
+
+          if old_price == usd_toman:
+              print(
+                  f"USD price is already {usd_toman}. "
+                  "Nothing to update."
               )
-              f.write("\n")
-          PY
+              raise SystemExit(0)
 
-          cat data/prices.json
+          encoded = base64.b64encode(
+              new_content.encode("utf-8")
+          ).decode("ascii")
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          body = json.dumps({
+              "message": "Update USD price",
+              "content": encoded,
+              "sha": sha,
+              "branch": "main"
+          }).encode("utf-8")
 
-          git add data/prices.json
+          update_request = urllib.request.Request(
+              api_url,
+              data=body,
+              headers={
+                  **headers,
+                  "Content-Type": "application/json"
+              },
+              method="PUT"
+          )
 
-          if git diff --cached --quiet; then
-            echo "Price has not changed."
-            exit 0
-          fi
+          try:
+              with urllib.request.urlopen(
+                  update_request
+              ) as response:
+                  result = json.load(response)
 
-          git commit -m "Update USD price"
+              print("prices.json updated successfully.")
+              print("New USD Toman:", usd_toman)
+              print("Commit:", result["commit"]["sha"])
 
-          for attempt in 1 2 3
-          do
-            echo "Push attempt $attempt..."
-
-            if git push origin HEAD:main; then
-              echo "Push successful."
-              exit 0
-            fi
-
-            echo "Push failed. Getting latest main..."
-
-            git fetch origin main
-            git reset --hard origin/main
-
-            USD_TOMAN=$(cat /tmp/usd_toman)
-
-            python3 - "$USD_TOMAN" <<'PY'
-          import json
-          import sys
-
-          usd_toman = int(sys.argv[1])
-
-          with open(
-              "data/prices.json",
-              "r",
-              encoding="utf-8"
-          ) as f:
-              prices = json.load(f)
-
-          prices["usdToman"] = usd_toman
-
-          with open(
-              "data/prices.json",
-              "w",
-              encoding="utf-8"
-          ) as f:
-              json.dump(
-                  prices,
-                  f,
-                  ensure_ascii=False,
-                  indent=2
+          except urllib.error.HTTPError as e:
+              error_body = e.read().decode(
+                  "utf-8",
+                  errors="replace"
               )
-              f.write("\n")
+
+              raise RuntimeError(
+                  f"GitHub API error {e.code}: {error_body}"
+              )
           PY
-
-            git add data/prices.json
-
-            if git diff --cached --quiet; then
-              echo "Price already exists in remote."
-              exit 0
-            fi
-
-            git commit -m "Update USD price"
-          done
-
-          echo "Could not push after 3 attempts."
-          exit 1
